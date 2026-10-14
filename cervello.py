@@ -312,20 +312,32 @@ For everything else, reply normally in plain text following these guidelines:
             risultato = esegui_azione(azione_dati)
             print(f"[ACTION RESULT]: {risultato}")
 
-            # Second call: turn the raw function result into a spoken confirmation.
-            messaggi.append({"role": "assistant", "content": testo_risposta})
-            messaggi.append({
-                "role": "user",
-                "content": (
+            # Build the confirmation prompt based on the action type.
+            # Calendar reads must list every event aloud — other actions just confirm briefly.
+            azione_tipo = azione_dati.get("action", "")
+            if azione_tipo == "leggi_calendario":
+                istruzione_conferma = (
+                    f"[System: calendar result: {risultato}] "
+                    "Read out ALL the events to the user naturally, including their times. "
+                    "If there are no events, say so. Reply in the same language the user used."
+                )
+                max_tok = 300  # Enough room to list multiple events
+            else:
+                istruzione_conferma = (
                     f"[System: action completed with result: {risultato}] "
-                    "Confirm to the user in one short spoken sentence what you just did."
-                ),
-            })
+                    "Confirm to the user in one short spoken sentence what you just did. "
+                    "Reply in the same language the user used."
+                )
+                max_tok = 100
+
+            messaggi.append({"role": "assistant", "content": testo_risposta})
+            messaggi.append({"role": "user", "content": istruzione_conferma})
+
             conferma = client.chat.completions.create(
                 model=MODEL_NAME,
                 messages=messaggi,
                 temperature=0.6,
-                max_tokens=100,
+                max_tokens=max_tok,
             )
             return conferma.choices[0].message.content.strip()
 
