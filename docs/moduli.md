@@ -68,18 +68,46 @@ TRIGGER_STOP        = ["basta", "stop", "silenzio", "bust", "pasta", "stob"]
 
 ---
 
-## `cervello.py` — LLM, Memory & Transcription
+## `cervello.py` — LLM, Tool Calling, Memory & Transcription
 
-**Role:** interfaces with the Groq API for both LLM responses and Whisper transcription; manages persistent user memory.
+**Role:** interfaces with the Groq API for LLM responses, tool calling, and Whisper transcription; manages persistent user memory.
 
-### Configuration
+### Dual-model strategy
 
-```python
-MODEL_NAME   = "openai/gpt-oss-120b"   # LLM model served on Groq
-FILE_MEMORIA = "memoria.json"            # Memory file path
+| Constant | Model | Used for |
+|---|---|---|
+| `MODEL_TOOLS` | `llama3-groq-70b-8192-tool-use-preview` | Intent detection, tool execution, brief confirmations |
+| `MODEL_CHAT` | `llama-3.3-70b-versatile` | High-quality free-form conversational replies |
+
+**Flow:**
+```
+User message
+    └─▶ MODEL_TOOLS (+ tool definitions)
+            ├─ tool_call → execute Python function → MODEL_TOOLS → confirmation
+            └─ no tool   → MODEL_CHAT → richer conversational answer
 ```
 
+### Available tools
+
+| Tool name | Python function | Trigger |
+|---|---|---|
+| `crea_evento_calendario` | `calendario.crea_evento()` | "Create a reminder / event / appointment" |
+| `leggi_calendario_oggi` | `calendario.leggi_eventi_oggi()` | "What's on today / what do I have planned?" |
+| `controlla_luce` | `luci.controlla_luce_cami()` | "Turn on/off the light / change colour / brightness" |
+
 ### Functions
+
+#### `esegui_tool(nome_tool, argomenti) -> str`
+Dispatches a tool call from the LLM to its matching Python function.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `nome_tool` | `str` | Tool name as returned by the LLM |
+| `argomenti` | `dict` | Parsed arguments from the LLM's `tool_call` |
+
+**Returns:** human-readable result string passed back to the LLM.
+
+---
 
 #### `carica_memoria() -> dict`
 Reads `memoria.json`. Creates an empty file if it does not exist.
@@ -98,9 +126,17 @@ Merges `nuovi_dati` into the existing memory and overwrites the file.
 ---
 
 #### `estrai_e_aggiorna_memoria(testo_utente: str)`
-Uses the LLM to extract personal facts from the user's message and persists them.
+Uses `MODEL_TOOLS` to extract personal facts from the user's message and persists them.
 
 Keys are **semantic and compound** to avoid collisions (e.g. `pizza_preferita`, `fiore_preferito`). If no facts are found, the LLM returns `{}` and nothing is written.
+
+---
+
+#### `_build_system_prompt() -> str`
+Builds the shared system prompt injected into every LLM call. Includes:
+- Current date and time (so both models can resolve "tomorrow", "next Monday", etc.)
+- Bob's personality and operational rules
+- Serialised memory snapshot
 
 ---
 
@@ -116,17 +152,14 @@ Transcribes an audio file using `whisper-large-v3` via Groq.
 ---
 
 #### `chiedi_a_bob(testo_utente: str, cronologia: list | None) -> str`
-Generates Bob's response by combining:
-- Long-term memory (from `memoria.json`)
-- Short-term conversation history (last 6 messages)
-- System prompt with personality rules and operational guidelines
+Main response function — implements the dual-model flow described above.
 
 | Parameter | Type | Description |
 |---|---|---|
 | `testo_utente` | `str` | User command |
-| `cronologia` | `list[dict]` | Message list `{"role": ..., "content": ...}` |
+| `cronologia` | `list[dict]` | Message history `{"role": ..., "content": ...}` (last 6 messages) |
 
-**Returns:** Bob's text response.
+**Returns:** Bob's spoken response text.
 
 **Note:** if the response ends with `?`, `occhi.py` keeps the microphone open automatically.
 

@@ -23,27 +23,38 @@ Bob is a bilingual (Italian/English) macOS desktop voice assistant with an anima
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                        occhi.py                          │
-│   ┌──────────────┐   ┌──────────────┐   ┌────────────┐  │
-│   │ Vosk (local) │──▶│   Whisper    │──▶│  cervello  │  │
-│   │  wake word   │   │  (Groq API)  │   │   (LLM)    │  │
-│   └──────────────┘   └──────────────┘   └────────────┘  │
-│                                               │          │
-│              ┌────────────────────────────────┘          │
-│              ▼                                           │
-│         ┌─────────┐    ┌──────────┐   ┌──────────────┐  │
-│         │  voce   │    │  luci    │   │  calendario  │  │
-│         │Edge TTS │    │  Tuya    │   │  AppleScript │  │
-│         └─────────┘    └──────────┘   └──────────────┘  │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                         occhi.py                            │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐ │
+│  │ Vosk (local) │─▶│   Whisper    │─▶│     cervello      │ │
+│  │  wake word   │  │  (Groq API)  │  │  dual-model LLM   │ │
+│  └──────────────┘  └──────────────┘  └───────────────────┘ │
+│                                         │            │      │
+│                              tool call? │            │ chat │
+│                    ┌────────────────────┘            │      │
+│                    ▼                                 ▼      │
+│          ┌──────────────────┐              ┌──────────────┐ │
+│          │ calendario/luci  │              │    voce      │ │
+│          │  AppleScript /   │─────────────▶│   Edge TTS   │ │
+│          │     Tuya LAN     │  confirmation│              │ │
+│          └──────────────────┘              └──────────────┘ │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+**Dual-model LLM strategy:**
+
+| Model | Role |
+|---|---|
+| `llama3-groq-70b-8192-tool-use-preview` | Detects tool intent, executes actions, generates short confirmations |
+| `llama-3.3-70b-versatile` | Generates high-quality free-form conversational answers |
 
 **Interaction cycle:**
 1. Vosk listens in the background → detects the wake word "Bob"
 2. Audio is recorded until silence is detected
 3. Whisper (Groq) transcribes the command to text
-4. `cervello.py` updates memory and generates the LLM response
+4. `cervello.py` — Pass 1: tool-use model decides whether an action is needed
+   - **Tool triggered** → Python function runs → short spoken confirmation
+   - **No tool** → conversational model generates a richer reply
 5. `voce.py` converts the response to speech via Edge TTS
 6. Pygame plays the audio and animates the eyes based on current state
 
@@ -80,17 +91,19 @@ cp memoria.json.example memoria.json
 
 ### Environment variables
 
-Create a `.env` file in the project root:
+Copy the example file and fill in your key:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env`:
 
 ```env
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-Or export it directly in the terminal:
-
-```bash
-export GROQ_API_KEY="gsk_xxxxxxxxxxxxxxxxxxxxxxxx"
-```
+`cervello.py` loads this file automatically via `python-dotenv`. You can also export the variable in the terminal if you prefer not to use a `.env` file.
 
 ### Smart light configuration (optional)
 
@@ -154,6 +167,7 @@ bob/
 | `pyaudio` | Microphone input |
 | `numpy` | Volume / silence detection |
 | `tinytuya` | Tuya smart home LAN control |
+| `python-dotenv` | Loads `GROQ_API_KEY` from `.env` |
 
 ---
 

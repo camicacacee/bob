@@ -10,9 +10,10 @@ temp_cmd.wav
 # Modello Vosk (file binari pesanti — scaricalo separatamente)
 modello_vosk/
 
-# Variabili d'ambiente e credenziali
+# Environment variables and credentials (keep .env.example committed)
 .env
 *.env
+!.env.example
 
 # Python
 __pycache__/
