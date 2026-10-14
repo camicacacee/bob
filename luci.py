@@ -9,15 +9,22 @@ Security note: never commit real credentials. Store them in environment
 variables or a .env file and load them at runtime.
 """
 
+import os
 import tinytuya
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # ---------------------------------------------------------------------------
-# Device credentials — replace with your own values (do NOT commit these)
+# Device credentials — loaded from environment / .env file, never hardcoded
 # ---------------------------------------------------------------------------
 
-DEVICE_ID  = "bf6b0b999b130f0af7mrc3"
-IP_ADDRESS = "192.168.0.183"
-LOCAL_KEY  = "0P>5||/{SfrM:E7m"
+DEVICE_ID  = os.environ.get("TUYA_DEVICE_ID", "")
+IP_ADDRESS = os.environ.get("TUYA_IP_ADDRESS", "")
+LOCAL_KEY  = os.environ.get("TUYA_LOCAL_KEY", "")
 
 
 # ---------------------------------------------------------------------------
