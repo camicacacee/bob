@@ -26,6 +26,36 @@ if not pygame.mixer.get_init():
 # Text pre-processing
 # ---------------------------------------------------------------------------
 
+def rimuovi_markdown(testo):
+    """Strip markdown formatting so the TTS engine never reads symbols aloud.
+
+    Handles the most common patterns the LLM produces:
+    - **bold** and *italic* → plain text
+    - # headings → plain text
+    - - bullet lines → sentence with a comma pause
+    - Backtick code spans → plain text
+    """
+    if not testo:
+        return ""
+    # Bold (**text**) and italic (*text*) — remove the surrounding asterisks.
+    testo = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', testo)
+    # Headings (# Title) — drop the hashes.
+    testo = re.sub(r'^\s*#{1,6}\s*', '', testo, flags=re.MULTILINE)
+    # Bullet points (- item or • item) — replace the marker with a comma so
+    # the TTS pauses naturally between items instead of running them together.
+    testo = re.sub(r'^\s*[-•]\s+', ', ', testo, flags=re.MULTILINE)
+    # Inline code (`code`) — remove backticks.
+    testo = re.sub(r'`(.+?)`', r'\1', testo)
+    # Newlines → single space (do this before comma cleanup).
+    testo = re.sub(r'\n+', ' ', testo)
+    # Clean up punctuation artefacts left by the replacements above.
+    testo = re.sub(r',\s*,', ',', testo)          # double commas
+    testo = re.sub(r'([.!?])\s*,\s*', r'\1 ', testo)  # ". ," → ". "
+    testo = re.sub(r'^\s*,\s*', '', testo)        # leading comma
+    testo = re.sub(r'\s{2,}', ' ', testo)         # multiple spaces
+    return testo.strip()
+
+
 def formatta_numeri_per_tts(testo):
     """Format numbers in text so the TTS engine reads them naturally.
 
@@ -121,7 +151,7 @@ def parla(testo):
     if not testo or not testo.strip():
         return
 
-    testo_pulito = formatta_numeri_per_tts(testo)
+    testo_pulito = formatta_numeri_per_tts(rimuovi_markdown(testo))
     modello_voce = rileva_lingua(testo_pulito)
     file_audio = "temp_voice.mp3"
 
