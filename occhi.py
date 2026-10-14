@@ -129,14 +129,16 @@ def ciclo_ascolto():
     # How many consecutive silence chunks end the recording.
     MAX_SILENZIO_CHUNKS = 16
 
-    # Vosk runs an English acoustic model, so Italian "Bob" can be misread.
-    # The expanded list catches common confusions (pop, bomb, bop).
-    TRIGGER_WORDS = ["bob", "pop", "bomb", "bop"]
+    # Vosk may transcribe "Bob" differently depending on the acoustic model
+    # (English or Italian) and microphone conditions. The list is intentionally
+    # broad to catch common phonetic confusions.
+    TRIGGER_WORDS = ["bob", "pop", "bomb", "bop", "bot", "boh", "ob", "bog", "bok", "bob's", "pob"]
 
     # Similarly broadened to catch stop-word confusions in live audio.
     TRIGGER_STOP = ["basta", "stop", "silenzio", "bust", "pasta", "stob"]
 
     print("\n[BOB READY] Say 'Bob' to start, or 'Stop' to interrupt.")
+    print("[DEBUG] Vosk will print what it hears in idle mode — check if 'bob' appears.")
 
     try:
         while True:
@@ -203,6 +205,11 @@ def ciclo_ascolto():
                     testo_parziale = json.loads(recognizer_vosk.Result()).get("text", "")
                 else:
                     testo_parziale = json.loads(recognizer_vosk.PartialResult()).get("partial", "")
+
+                # Print every non-empty transcript so the user can see what
+                # Vosk is hearing and add the correct variant to TRIGGER_WORDS.
+                if testo_parziale.strip():
+                    print(f"\r[VOSK IDLE]: {testo_parziale.strip():<40}", end="", flush=True)
 
                 if any(w in testo_parziale.lower() for w in TRIGGER_WORDS):
                     print(f"\n[WAKE WORD] Listening...")
