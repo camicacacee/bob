@@ -24,7 +24,6 @@ venv/
 env/
 
 # Presentazioni e file di progetto non-code
-*.key
 *.pptx
 *.pdf
 
