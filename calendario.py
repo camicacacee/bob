@@ -1,27 +1,67 @@
 """
 calendario.py — macOS Calendar integration via AppleScript.
 
-Reads today's events and creates new ones by driving the Calendar app
-through osascript. Requires macOS and the Calendar privacy permission
+Reads and creates events in the macOS Calendar app via osascript.
+Requires macOS and Calendar privacy permission
 (System Settings → Privacy & Security → Calendars).
+
+Time formatting note: time string of (start date of evt) uses the system's
+12h/24h preference and can be off by DST offsets. Instead, hours and minutes
+are extracted as integers and zero-padded manually to guarantee HH:MM 24h output.
 """
 
 import subprocess
 from datetime import datetime
 
 
+# ---------------------------------------------------------------------------
+# Shared AppleScript helper — formats event start time as HH:MM (24h)
+# ---------------------------------------------------------------------------
+
+# Inlined into each script string so osascript has no external dependencies.
+_FMT_TIME = """
+set h to hours of (start date of evt) as integer
+set m to minutes of (start date of evt) as integer
+set hStr to text -2 thru -1 of ("0" & (h as string))
+set mStr to text -2 thru -1 of ("0" & (m as string))
+set oraInizio to hStr & ":" & mStr
+"""
+
+# Inner loop body shared by both read functions.
+# Tries to extract HH:MM; falls back to "(all day)" for all-day events.
+_LOOP_BODY = """
+repeat with evt in listaEventi
+    try
+        set h to hours of (start date of evt) as integer
+        set m to minutes of (start date of evt) as integer
+        set hStr to text -2 thru -1 of ("0" & (h as string))
+        set mStr to text -2 thru -1 of ("0" & (m as string))
+        set output to output & (summary of evt) & " alle " & hStr & ":" & mStr & "; "
+    on error
+        -- all-day event: no time component available
+        set output to output & (summary of evt) & " (tutto il giorno); "
+    end try
+end repeat
+"""
+
+
+# ---------------------------------------------------------------------------
+# Read functions
+# ---------------------------------------------------------------------------
+
 def leggi_eventi_data(data: str) -> str:
     """Read all events for a specific date from macOS Calendar.
 
     Args:
-        data (str): Date in 'YYYY-MM-DD' format.
+        data (str): Target date in 'YYYY-MM-DD' format.
 
     Returns:
-        str: List of events, or a no-events message, or an error string.
+        str: Events list as "Title alle HH:MM; ...", a no-events message,
+             or an error string on failure.
     """
     try:
         dt = datetime.strptime(data, "%Y-%m-%d")
-        script = f'''
+        script = f"""
         set targetDate to current date
         set year of targetDate to {dt.year}
         set month of targetDate to {dt.month}
@@ -36,46 +76,32 @@ def leggi_eventi_data(data: str) -> str:
             repeat with cal in every calendar
                 try
                     set listaEventi to (every event of cal whose start date is greater than or equal to targetDate and start date is less than fineGiorno)
-                    repeat with evt in listaEventi
-                        try
-                            set oraInizio to time string of (start date of evt)
-                            set output to output & (summary of evt) & " at " & oraInizio & "; "
-                        on error
-                            set output to output & (summary of evt) & " (all day); "
-                        end try
-                    end repeat
+                    {_LOOP_BODY}
                 on error
+                    -- skip unreadable or subscribed calendars
                 end try
             end repeat
             if output is "" then
-                return "No events on {data}."
+                return "Nessun evento il {data}."
             else
                 return output
             end if
         end tell
-        '''
+        """
         res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
         return res.stdout.strip()
     except Exception as e:
-        return f"Error reading calendar for {data}: {e}"
+        return f"Errore nella lettura del calendario per {data}: {e}"
 
 
 def leggi_eventi_oggi() -> str:
     """Read all events scheduled for today from macOS Calendar.
 
-    Queries the Calendar app via AppleScript for events whose start time
-    falls between midnight and midnight of the current day.
-
     Returns:
-        str: Comma-separated list in the format "Title at HH:MM:SS; ...",
-             or "No events scheduled for today." if the calendar is empty.
-             Returns an error string if AppleScript execution fails.
+        str: Events list as "Title alle HH:MM; ...", a no-events message,
+             or an error string on failure.
     """
-    # "every event of every calendar" returns a list of lists (one per calendar),
-    # so we loop over each calendar separately to get individual events.
-    # try/on error skips all-day events and entries from read-only calendars
-    # (birthdays, holidays) whose start date cannot be coerced to a time string.
-    script = '''
+    script = f"""
     set oggi to current date
     set inizioGiorno to oggi - (time of oggi)
     set fineGiorno to inizioGiorno + (24 * hours)
@@ -85,60 +111,46 @@ def leggi_eventi_oggi() -> str:
         repeat with cal in every calendar
             try
                 set listaEventi to (every event of cal whose start date is greater than or equal to inizioGiorno and start date is less than fineGiorno)
-                repeat with evt in listaEventi
-                    try
-                        set oraInizio to time string of (start date of evt)
-                        set output to output & (summary of evt) & " at " & oraInizio & "; "
-                    on error
-                        -- all-day event: include title without a time
-                        set output to output & (summary of evt) & " (all day); "
-                    end try
-                end repeat
+                {_LOOP_BODY}
             on error
-                -- skip unreadable calendars (e.g. subscribed, read-only)
+                -- skip unreadable or subscribed calendars
             end try
         end repeat
         if output is "" then
-            return "No events scheduled for today."
+            return "Nessun impegno in programma per oggi."
         else
             return output
         end if
     end tell
-    '''
+    """
     try:
-        res = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
         return res.stdout.strip()
     except Exception as e:
-        return f"Error reading calendar: {e}"
+        return f"Errore nella lettura del calendario: {e}"
 
+
+# ---------------------------------------------------------------------------
+# Create event
+# ---------------------------------------------------------------------------
 
 def crea_evento(titolo: str, data_ora: str, durata_minuti: int = 60) -> str:
     """Create a new event in the default macOS Calendar.
 
-    Builds an AppleScript that sets the event's start and end dates by
-    decomposing the parsed datetime into individual AppleScript date fields,
-    which is the most reliable way to avoid locale-dependent date parsing.
+    Each date component is set individually to avoid locale-dependent
+    AppleScript date string parsing failures.
 
     Args:
         titolo (str): Event title / summary.
-        data_ora (str): Start time in "YYYY-MM-DD HH:MM" format
-                        (e.g. "2026-09-14 15:30").
-        durata_minuti (int): Event duration in minutes. Defaults to 60.
+        data_ora (str): Start time in 'YYYY-MM-DD HH:MM' format.
+        durata_minuti (int): Duration in minutes (default 60).
 
     Returns:
-        str: Confirmation message on success, or an error string on failure.
+        str: Confirmation message, or an error string on failure.
     """
     try:
         dt = datetime.strptime(data_ora, "%Y-%m-%d %H:%M")
-
-        # AppleScript does not handle ISO date strings reliably across locales,
-        # so each date component is set individually via property assignment.
-        script = f'''
+        script = f"""
         set startDate to current date
         set year of startDate to {dt.year}
         set month of startDate to {dt.month}
@@ -153,13 +165,8 @@ def crea_evento(titolo: str, data_ora: str, durata_minuti: int = 60) -> str:
                 make new event with properties {{summary:"{titolo}", start date:startDate, end date:endDate}}
             end tell
         end tell
-        '''
-        subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return f"Event '{titolo}' added for {data_ora}."
+        """
+        subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
+        return f"Evento '{titolo}' aggiunto per il {data_ora}."
     except Exception as e:
-        return f"Error creating event: {e}"
+        return f"Errore nella creazione dell'evento: {e}"
