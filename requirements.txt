@@ -1,0 +1,7 @@
+groq>=0.9.0
+vosk>=0.3.45
+edge-tts>=6.1.9
+pygame>=2.5.0
+pyaudio>=0.2.14
+numpy>=1.26.0
+tinytuya>=1.15.0

@@ -1,0 +1,31 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Audio temporanei generati da Bob
+temp_voice.mp3
+temp_cmd.wav
+
+# Modello Vosk (file binari pesanti — scaricalo separatamente)
+modello_vosk/
+
+# Variabili d'ambiente e credenziali
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Presentazioni e file di progetto non-code
+*.key
+*.pptx
+*.pdf
+
+# Memoria utente (dati personali — non committare)
+memoria.json
