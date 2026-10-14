@@ -21,6 +21,10 @@ def leggi_eventi_oggi() -> str:
              or "No events scheduled for today." if the calendar is empty.
              Returns an error string if AppleScript execution fails.
     """
+    # "every event of every calendar" returns a list of lists (one per calendar),
+    # so we loop over each calendar separately to get individual events.
+    # try/on error skips all-day events and entries from read-only calendars
+    # (birthdays, holidays) whose start date cannot be coerced to a time string.
     script = '''
     set oggi to current date
     set inizioGiorno to oggi - (time of oggi)
@@ -28,9 +32,21 @@ def leggi_eventi_oggi() -> str:
 
     tell application "Calendar"
         set output to ""
-        set listaEventi to (every event of every calendar whose start date is greater than or equal to inizioGiorno and start date is less than fineGiorno)
-        repeat with evt in listaEventi
-            set output to output & (summary of evt) & " at " & (time string of (start date of evt)) & "; "
+        repeat with cal in every calendar
+            try
+                set listaEventi to (every event of cal whose start date is greater than or equal to inizioGiorno and start date is less than fineGiorno)
+                repeat with evt in listaEventi
+                    try
+                        set oraInizio to time string of (start date of evt)
+                        set output to output & (summary of evt) & " at " & oraInizio & "; "
+                    on error
+                        -- all-day event: include title without a time
+                        set output to output & (summary of evt) & " (all day); "
+                    end try
+                end repeat
+            on error
+                -- skip unreadable calendars (e.g. subscribed, read-only)
+            end try
         end repeat
         if output is "" then
             return "No events scheduled for today."
