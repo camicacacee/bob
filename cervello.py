@@ -45,11 +45,11 @@ except ImportError:
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# Tool-use specialist — must be this model for Groq tool calling to work.
-MODEL_TOOLS = "llama3-groq-70b-8192-tool-use-preview"
-
-# Best conversational model on Groq — used for free-form answers with no tool.
-MODEL_CHAT = "llama-3.3-70b-versatile"
+# llama-3.3-70b-versatile supports both tool calling and high-quality conversation,
+# so a single model covers both roles after llama3-groq-70b-8192-tool-use-preview
+# was decommissioned by Groq in October 2025.
+MODEL_TOOLS = "llama-3.3-70b-versatile"
+MODEL_CHAT  = "llama-3.3-70b-versatile"
 
 FILE_MEMORIA = "memoria.json"
 
