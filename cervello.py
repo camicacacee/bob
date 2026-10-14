@@ -24,7 +24,7 @@ import re
 from datetime import datetime, timedelta
 from groq import Groq
 
-from calendario import crea_evento, leggi_eventi_oggi
+from calendario import crea_evento, leggi_eventi_oggi, leggi_eventi_data
 from luci import controlla_luce_cami
 
 # Load .env if python-dotenv is installed; otherwise fall back to shell env.
@@ -69,6 +69,9 @@ def esegui_azione(dati: dict) -> str:
         )
 
     if azione == "leggi_calendario":
+        data = dati.get("data")
+        if data:
+            return leggi_eventi_data(data)
         return leggi_eventi_oggi()
 
     if azione == "controlla_luce":
@@ -256,8 +259,12 @@ with the corresponding JSON object — nothing else, no extra text.
 1. Create a calendar event or reminder:
    {{"action":"crea_evento","titolo":"<title>","data_ora":"YYYY-MM-DD HH:MM","durata_minuti":<minutes>}}
 
-2. Read today's calendar:
-   {{"action":"leggi_calendario"}}
+2. Read the calendar for a specific date (ALWAYS use this when the user asks
+   what they have planned, what's on their schedule, or what they need to do
+   on any day — today, tomorrow, or any named day):
+   {{"action":"leggi_calendario","data":"YYYY-MM-DD"}}
+   Use today's date ({ora_attuale[:10]}) if no specific date is mentioned.
+   Resolve named days using the current date: "venerdì", "Friday", "tomorrow", etc.
 
 3. Control the smart light "Cami":
    {{"action":"controlla_luce","luce_azione":"accendi|spegni|colore|luminosita","colore":"<name>","luminosita":<0-100>}}

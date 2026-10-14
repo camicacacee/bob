@@ -10,6 +10,56 @@ import subprocess
 from datetime import datetime
 
 
+def leggi_eventi_data(data: str) -> str:
+    """Read all events for a specific date from macOS Calendar.
+
+    Args:
+        data (str): Date in 'YYYY-MM-DD' format.
+
+    Returns:
+        str: List of events, or a no-events message, or an error string.
+    """
+    try:
+        dt = datetime.strptime(data, "%Y-%m-%d")
+        script = f'''
+        set targetDate to current date
+        set year of targetDate to {dt.year}
+        set month of targetDate to {dt.month}
+        set day of targetDate to {dt.day}
+        set hours of targetDate to 0
+        set minutes of targetDate to 0
+        set seconds of targetDate to 0
+        set fineGiorno to targetDate + (24 * hours)
+
+        tell application "Calendar"
+            set output to ""
+            repeat with cal in every calendar
+                try
+                    set listaEventi to (every event of cal whose start date is greater than or equal to targetDate and start date is less than fineGiorno)
+                    repeat with evt in listaEventi
+                        try
+                            set oraInizio to time string of (start date of evt)
+                            set output to output & (summary of evt) & " at " & oraInizio & "; "
+                        on error
+                            set output to output & (summary of evt) & " (all day); "
+                        end try
+                    end repeat
+                on error
+                end try
+            end repeat
+            if output is "" then
+                return "No events on {data}."
+            else
+                return output
+            end if
+        end tell
+        '''
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=True)
+        return res.stdout.strip()
+    except Exception as e:
+        return f"Error reading calendar for {data}: {e}"
+
+
 def leggi_eventi_oggi() -> str:
     """Read all events scheduled for today from macOS Calendar.
 
