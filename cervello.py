@@ -23,6 +23,7 @@ import json
 import re
 from datetime import datetime, timedelta
 from groq import Groq
+from voce import rileva_lingua
 
 from calendario import crea_evento, leggi_eventi_oggi, leggi_eventi_data
 from luci import controlla_luce_cami
@@ -241,6 +242,16 @@ def chiedi_a_bob(testo_utente: str, cronologia: list = None) -> str:
     memoria_fatti = carica_memoria()
     stringa_memoria = json.dumps(memoria_fatti, ensure_ascii=False)
 
+    # Detect the user's language from their message and make it explicit in
+    # every prompt — "reply in the same language" is too vague and gets ignored.
+    voce_rilevata = rileva_lingua(testo_utente)
+    if voce_rilevata == "en-US-GuyNeural":
+        lingua_utente = "English"
+        lingua_istruzione = "You MUST reply in English only."
+    else:
+        lingua_utente = "Italian"
+        lingua_istruzione = "Devi rispondere SOLO in italiano."
+
     # Inject current date so the model resolves relative expressions correctly.
     ora_attuale = datetime.now().strftime("%Y-%m-%d %H:%M")
     domani = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -251,6 +262,10 @@ with a sharp entrepreneurial mindset.
 
 Current date and time : {ora_attuale}
 Tomorrow's date       : {domani}
+
+⚠️ LANGUAGE RULE (mandatory, no exceptions):
+The user's last message was in {lingua_utente}. {lingua_istruzione}
+This applies to EVERY reply, including action confirmations.
 
 ═══ ACTION SYSTEM ═══
 When the user asks you to perform one of the following actions, reply ONLY
@@ -285,7 +300,6 @@ For everything else, reply normally in plain text following these guidelines:
    {stringa_memoria}
 - Distinguish precisely between similar memory keys.
 - If a fact is not in memory, honestly say you don't know.
-- Reply in the same language the user used.
 """
 
     messaggi = [{"role": "system", "content": system_prompt}]
@@ -318,15 +332,14 @@ For everything else, reply normally in plain text following these guidelines:
             if azione_tipo == "leggi_calendario":
                 istruzione_conferma = (
                     f"[System: calendar result: {risultato}] "
-                    "Read out ALL the events to the user naturally, including their times. "
-                    "If there are no events, say so. Reply in the same language the user used."
+                    f"Read out ALL the events naturally, including their times. "
+                    f"If there are no events, say so. {lingua_istruzione}"
                 )
                 max_tok = 300  # Enough room to list multiple events
             else:
                 istruzione_conferma = (
                     f"[System: action completed with result: {risultato}] "
-                    "Confirm to the user in one short spoken sentence what you just did. "
-                    "Reply in the same language the user used."
+                    f"Confirm in one short spoken sentence what you just did. {lingua_istruzione}"
                 )
                 max_tok = 100
 
