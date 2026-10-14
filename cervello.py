@@ -1,38 +1,33 @@
 """
-cervello.py — Bob's brain: dual-model LLM, tool calling, memory, and transcription.
+cervello.py — Bob's brain: LLM responses, intent-based actions, memory, and transcription.
 
-Two-model strategy
-------------------
-MODEL_TOOLS  (llama3-groq-70b-8192-tool-use-preview)
-    First pass on every user message. Decides whether a tool is needed.
-    If the model returns a tool_call, the matching Python function is executed
-    and a short confirmation is generated with the same model.
+Action detection strategy
+--------------------------
+openai/gpt-oss-120b does not support the Groq native tool_choice API, so actions
+are detected via prompt engineering: the system prompt instructs the model to reply
+with a compact JSON block when it needs to perform an action, and with plain text
+for everything else. This module parses that JSON and dispatches to the matching
+Python function.
 
-MODEL_CHAT  (llama-3.3-70b-versatile)
-    Used only when no tool was triggered. Groq's best conversational model
-    gives higher-quality free-form answers than the tool-use specialist.
+JSON action format (model output when an action is needed):
+    {"action": "<name>", "param1": "value1", ...}
 
-Flow
-----
-User message
-    └─▶ MODEL_TOOLS (with tool definitions)
-            ├─ tool_call returned
-            │       └─▶ execute Python function
-            │               └─▶ MODEL_TOOLS → short spoken confirmation
-            └─ plain text returned (no tool needed)
-                    └─▶ MODEL_CHAT → richer conversational answer
+Supported actions:
+    crea_evento      — create a macOS Calendar event
+    leggi_calendario — read today's events
+    controlla_luce   — control the Tuya smart bulb
 """
 
 import os
 import json
+import re
 from datetime import datetime, timedelta
 from groq import Groq
 
 from calendario import crea_evento, leggi_eventi_oggi
 from luci import controlla_luce_cami
 
-# Load variables from a .env file if python-dotenv is installed.
-# Falls back silently to the shell environment if the package is missing.
+# Load .env if python-dotenv is installed; otherwise fall back to shell env.
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -45,135 +40,71 @@ except ImportError:
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# llama-3.3-70b-versatile supports both tool calling and high-quality conversation,
-# so a single model covers both roles after llama3-groq-70b-8192-tool-use-preview
-# was decommissioned by Groq in October 2025.
-MODEL_TOOLS = "llama-3.3-70b-versatile"
-MODEL_CHAT  = "llama-3.3-70b-versatile"
+# The original model that works well for this account.
+MODEL_NAME = "openai/gpt-oss-120b"
 
 FILE_MEMORIA = "memoria.json"
 
-# ---------------------------------------------------------------------------
-# Tool definitions
-# ---------------------------------------------------------------------------
-# Each entry is passed to the Groq API so the LLM knows what actions exist.
-# The "description" fields are the main signal the model uses to decide
-# whether and when to call a tool — be explicit and give concrete examples.
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "crea_evento_calendario",
-            "description": (
-                "Creates an event or reminder in the user's macOS Calendar. "
-                "Call this whenever the user asks to add, schedule, set, remind, "
-                "or note something at a specific time or date. "
-                "Today's date and tomorrow's date are always in the system prompt — "
-                "use them to resolve relative expressions such as 'tomorrow', "
-                "'next Monday', 'in 2 hours', 'this evening'."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "titolo": {
-                        "type": "string",
-                        "description": "Short, clear event title (e.g. 'Grocery shopping', 'Call with Marco').",
-                    },
-                    "data_ora": {
-                        "type": "string",
-                        "description": "Start date and time in 'YYYY-MM-DD HH:MM' format.",
-                    },
-                    "durata_minuti": {
-                        "type": "integer",
-                        "description": "Duration in minutes. Default to 60 if not mentioned.",
-                    },
-                },
-                "required": ["titolo", "data_ora"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "leggi_calendario_oggi",
-            "description": (
-                "Returns all events scheduled for today. "
-                "Use when the user asks what's on today, what they have planned, "
-                "or about their schedule / agenda for the day."
-            ),
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "controlla_luce",
-            "description": (
-                "Controls the smart light named 'Cami'. "
-                "Use for any request to turn it on or off, change its colour, "
-                "or adjust its brightness."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "azione": {
-                        "type": "string",
-                        "enum": ["accendi", "spegni", "colore", "luminosita"],
-                        "description": "Action to perform on the light.",
-                    },
-                    "colore": {
-                        "type": "string",
-                        "enum": ["rosso", "verde", "blu", "bianco", "giallo", "viola", "rosa", "arancione"],
-                        "description": "Colour name — required only when azione is 'colore'.",
-                    },
-                    "luminosita": {
-                        "type": "integer",
-                        "description": "Brightness 0–100 % — required only when azione is 'luminosita'.",
-                    },
-                },
-                "required": ["azione"],
-            },
-        },
-    },
-]
-
 
 # ---------------------------------------------------------------------------
-# Tool dispatcher
+# Action dispatcher
 # ---------------------------------------------------------------------------
 
-def esegui_tool(nome_tool: str, argomenti: dict) -> str:
-    """Execute the Python function that matches a tool call from the LLM.
-
-    Each branch maps a tool name (as defined in TOOLS) to its Python
-    implementation. Arguments arrive as a plain dict already parsed from JSON.
+def esegui_azione(dati: dict) -> str:
+    """Execute a structured action decoded from the model's JSON reply.
 
     Args:
-        nome_tool (str): Tool name returned by the LLM.
-        argomenti (dict): Parsed function arguments from the LLM's tool_call.
+        dati (dict): Parsed JSON from the model. Must contain an "action" key.
 
     Returns:
-        str: Human-readable result passed back to the LLM for confirmation.
+        str: Human-readable result passed back to the model for confirmation.
     """
-    if nome_tool == "crea_evento_calendario":
+    azione = dati.get("action", "")
+
+    if azione == "crea_evento":
         return crea_evento(
-            titolo=argomenti["titolo"],
-            data_ora=argomenti["data_ora"],
-            durata_minuti=argomenti.get("durata_minuti", 60),
+            titolo=dati.get("titolo", "Evento"),
+            data_ora=dati.get("data_ora", ""),
+            durata_minuti=int(dati.get("durata_minuti", 60)),
         )
 
-    if nome_tool == "leggi_calendario_oggi":
+    if azione == "leggi_calendario":
         return leggi_eventi_oggi()
 
-    if nome_tool == "controlla_luce":
+    if azione == "controlla_luce":
         return controlla_luce_cami(
-            azione=argomenti["azione"],
-            colore=argomenti.get("colore"),
-            luminosita=argomenti.get("luminosita"),
+            azione=dati.get("luce_azione", ""),
+            colore=dati.get("colore"),
+            luminosita=dati.get("luminosita"),
         )
 
-    return f"Unknown tool: {nome_tool}"
+    return f"Unknown action: {azione}"
+
+
+def _estrai_json_azione(testo: str):
+    """Try to extract an action JSON block from the model's reply.
+
+    The model is instructed to output a single JSON object on the first line
+    when it wants to perform an action. This function extracts it safely.
+
+    Args:
+        testo (str): Raw model reply.
+
+    Returns:
+        dict | None: Parsed action dict, or None if the reply is plain text.
+    """
+    # Look for a JSON object anywhere in the response (handles minor formatting drift).
+    match = re.search(r'\{[^{}]+\}', testo, re.DOTALL)
+    if not match:
+        return None
+    try:
+        dati = json.loads(match.group())
+        # Only treat it as an action if the "action" key is present.
+        if "action" in dati:
+            return dati
+    except json.JSONDecodeError:
+        pass
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +115,7 @@ def carica_memoria() -> dict:
     """Load persistent user facts from the JSON memory file.
 
     Returns:
-        dict: Current memory contents, or {} if missing or corrupt.
+        dict: Current memory, or {} if the file is missing or corrupt.
     """
     if not os.path.exists(FILE_MEMORIA):
         with open(FILE_MEMORIA, "w", encoding="utf-8") as f:
@@ -212,10 +143,7 @@ def salva_memoria(nuovi_dati: dict):
 def estrai_e_aggiorna_memoria(testo_utente: str):
     """Extract personal facts from the user's message and persist them.
 
-    Sends the message to MODEL_TOOLS with a strict JSON-only extraction
-    prompt. Uses compound semantic keys (e.g. 'pizza_preferita') so that
-    different entities with similar names never overwrite each other.
-
+    Uses compound semantic keys (e.g. 'pizza_preferita') to avoid collisions.
     Failures are silently swallowed — a missed extraction is non-fatal.
 
     Args:
@@ -236,9 +164,9 @@ Respond ONLY with valid JSON — no extra text or markdown.
 """
     try:
         completion = client.chat.completions.create(
-            model=MODEL_TOOLS,       # Structured output — tool model is reliable here
+            model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt_estrazione}],
-            temperature=0.1,         # Near-zero temperature for deterministic extraction
+            temperature=0.1,
         )
         risposta_testo = completion.choices[0].message.content.strip()
 
@@ -249,7 +177,7 @@ Respond ONLY with valid JSON — no extra text or markdown.
             risposta_testo = risposta_testo[3:-3].strip()
 
         dati = json.loads(risposta_testo)
-        if dati and isinstance(dati, dict):
+        if dati and isinstance(dati, dict) and "action" not in dati:
             salva_memoria(dati)
             print(f"[MEMORY UPDATED]: {dati}")
     except Exception as e:
@@ -283,87 +211,76 @@ def trascrivi_audio(file_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Shared system prompt builder
+# LLM response with prompt-based action detection
 # ---------------------------------------------------------------------------
 
-def _build_system_prompt() -> str:
-    """Build the system prompt with current date, memory, and Bob's personality.
+def chiedi_a_bob(testo_utente: str, cronologia: list = None) -> str:
+    """Generate Bob's response, executing actions when the model requests them.
 
-    Injecting the current date lets both models resolve relative expressions
-    like 'tomorrow' or 'next Monday' without guessing.
+    The system prompt instructs the model to reply with a specific JSON block
+    when it detects an actionable intent (calendar, lights). This module parses
+    that JSON, runs the Python function, then calls the model again with the
+    result to get a natural spoken confirmation.
+
+    For plain conversational replies (no JSON in the response), the model's
+    text is returned directly.
+
+    Args:
+        testo_utente (str): The user's transcribed command.
+        cronologia (list[dict] | None): Conversation history as
+            [{"role": ..., "content": ...}] dicts (last 6 messages).
 
     Returns:
-        str: Fully assembled system prompt string.
+        str: Bob's spoken response text.
     """
-    ora_attuale = datetime.now().strftime("%Y-%m-%d %H:%M")
-    domani = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    estrai_e_aggiorna_memoria(testo_utente)
 
     memoria_fatti = carica_memoria()
     stringa_memoria = json.dumps(memoria_fatti, ensure_ascii=False)
 
-    return f"""
+    # Inject current date so the model resolves relative expressions correctly.
+    ora_attuale = datetime.now().strftime("%Y-%m-%d %H:%M")
+    domani = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    system_prompt = f"""
 You are Bob, a bilingual (Italian and English) executive desktop assistant
 with a sharp entrepreneurial mindset.
 
 Current date and time : {ora_attuale}
 Tomorrow's date       : {domani}
 
-Core behaviour guidelines:
-1. **Be direct and natural.** Answer short or closed questions concisely.
-   Never force unnecessary follow-up questions.
-2. **Use tools proactively.** When the user asks to create an event, reminder,
-   or todo — always call crea_evento_calendario immediately. Do not ask for
-   confirmation first; just act and report back concisely.
-3. **Measured proactivity.** Ask questions ONLY when the context genuinely
-   requires it. If you ask a real question, end your turn with a question
-   mark (?) so the system keeps the microphone open.
-4. **Action-oriented mindset.** Be decisive and look for the practical angle.
-5. **Long-term factual memory.**
-   Known facts about the user:
-   {stringa_memoria}
+═══ ACTION SYSTEM ═══
+When the user asks you to perform one of the following actions, reply ONLY
+with the corresponding JSON object — nothing else, no extra text.
 
-Operational rules:
-- Distinguish precisely between similar-named memory keys.
+1. Create a calendar event or reminder:
+   {{"action":"crea_evento","titolo":"<title>","data_ora":"YYYY-MM-DD HH:MM","durata_minuti":<minutes>}}
+
+2. Read today's calendar:
+   {{"action":"leggi_calendario"}}
+
+3. Control the smart light "Cami":
+   {{"action":"controlla_luce","luce_azione":"accendi|spegni|colore|luminosita","colore":"<name>","luminosita":<0-100>}}
+
+Rules for actions:
+- Use the current date above to resolve relative expressions: "tomorrow" → {domani}, "in 2 hours" → calculate from {ora_attuale}.
+- For durata_minuti, default to 60 if not mentioned.
+- For colore and luminosita, omit the key if not applicable.
+- Output ONLY the JSON, with no surrounding text or markdown.
+
+═══ CONVERSATION ═══
+For everything else, reply normally in plain text following these guidelines:
+1. Be direct and natural. Answer short questions concisely.
+2. Measured proactivity: ask follow-up questions ONLY when truly necessary.
+   If you ask a question, end with ? so the microphone stays open.
+3. Action-oriented mindset: be decisive, look for the practical angle.
+4. Long-term memory — known facts about the user:
+   {stringa_memoria}
+- Distinguish precisely between similar memory keys.
 - If a fact is not in memory, honestly say you don't know.
-- Reply in the same language the user used in their last message.
-- After executing a tool, confirm what you did in one short spoken sentence.
+- Reply in the same language the user used.
 """
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-
-def chiedi_a_bob(testo_utente: str, cronologia: list = None) -> str:
-    """Generate Bob's response using the dual-model strategy.
-
-    Pass 1 — MODEL_TOOLS (tool-use specialist):
-        Sent with the full tool list. If the model returns a tool_call,
-        the matching Python function is executed. A brief confirmation is
-        then generated with the same model (it already has the context).
-
-    Pass 2 — MODEL_CHAT (conversational specialist):
-        Runs only when Pass 1 produced NO tool call. The plain-text response
-        from MODEL_TOOLS is discarded and the message list is re-submitted to
-        MODEL_CHAT, which produces higher-quality free-form answers.
-
-    This avoids doubling API calls on tool-triggered turns while giving the
-    best conversation quality for ordinary exchanges.
-
-    Args:
-        testo_utente (str): The user's transcribed command.
-        cronologia (list[dict] | None): Conversation history as
-            [{"role": ..., "content": ...}, ...] dicts (last 6 messages).
-
-    Returns:
-        str: Bob's spoken response text.
-    """
-    # Always attempt to extract and persist new personal facts first.
-    estrai_e_aggiorna_memoria(testo_utente)
-
-    system_prompt = _build_system_prompt()
-
-    # Assemble the message list for this turn.
     messaggi = [{"role": "system", "content": system_prompt}]
     if cronologia:
         messaggi.extend(cronologia)
@@ -371,60 +288,42 @@ def chiedi_a_bob(testo_utente: str, cronologia: list = None) -> str:
         messaggi.append({"role": "user", "content": testo_utente})
 
     try:
-        # ------------------------------------------------------------------
-        # Pass 1: tool-use model — detects intent and executes actions
-        # ------------------------------------------------------------------
+        # First call: model either returns an action JSON or a plain reply.
         risposta = client.chat.completions.create(
-            model=MODEL_TOOLS,
+            model=MODEL_NAME,
             messages=messaggi,
-            tools=TOOLS,
-            tool_choice="auto",   # Model decides whether a tool is needed
             temperature=0.6,
             max_tokens=300,
         )
+        testo_risposta = risposta.choices[0].message.content.strip()
 
-        messaggio_assistente = risposta.choices[0].message
+        # Check whether the model wants to perform an action.
+        azione_dati = _estrai_json_azione(testo_risposta)
 
-        if messaggio_assistente.tool_calls:
-            # ── Tool path ──────────────────────────────────────────────────
-            # Append the assistant's tool_call message so the next call has
-            # full context of what was requested and what was returned.
-            messaggi.append(messaggio_assistente)
+        if azione_dati:
+            print(f"[ACTION]: {azione_dati}")
+            risultato = esegui_azione(azione_dati)
+            print(f"[ACTION RESULT]: {risultato}")
 
-            for tool_call in messaggio_assistente.tool_calls:
-                nome_tool = tool_call.function.name
-                argomenti = json.loads(tool_call.function.arguments)
-
-                print(f"[TOOL CALL] {nome_tool}({argomenti})")
-                risultato = esegui_tool(nome_tool, argomenti)
-                print(f"[TOOL RESULT] {risultato}")
-
-                messaggi.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": risultato,
-                })
-
-            # Generate a short spoken confirmation with the tool-use model.
-            # MODEL_CHAT is not needed here — the reply is always brief.
-            risposta_finale = client.chat.completions.create(
-                model=MODEL_TOOLS,
+            # Second call: turn the raw function result into a spoken confirmation.
+            messaggi.append({"role": "assistant", "content": testo_risposta})
+            messaggi.append({
+                "role": "user",
+                "content": (
+                    f"[System: action completed with result: {risultato}] "
+                    "Confirm to the user in one short spoken sentence what you just did."
+                ),
+            })
+            conferma = client.chat.completions.create(
+                model=MODEL_NAME,
                 messages=messaggi,
                 temperature=0.6,
-                max_tokens=150,
+                max_tokens=100,
             )
-            return risposta_finale.choices[0].message.content.strip()
+            return conferma.choices[0].message.content.strip()
 
-        # ── Conversational path ────────────────────────────────────────────
-        # No tool was called — discard MODEL_TOOLS' plain-text reply and
-        # re-submit the same messages to MODEL_CHAT for a richer response.
-        risposta_chat = client.chat.completions.create(
-            model=MODEL_CHAT,
-            messages=messaggi,
-            temperature=0.6,
-            max_tokens=300,
-        )
-        return risposta_chat.choices[0].message.content.strip()
+        # Plain conversational reply — return as-is.
+        return testo_risposta
 
     except Exception as e:
         print(f"[LLM ERROR]: {e}")
