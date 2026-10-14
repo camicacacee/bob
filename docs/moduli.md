@@ -1,235 +1,235 @@
-# Documentazione Moduli — Bob
+# Module Reference — Bob
 
-Riferimento tecnico dei cinque moduli Python che compongono Bob.
+Technical reference for all five Python modules that make up Bob.
 
 ---
 
-## `occhi.py` — Entry point e interfaccia
+## `occhi.py` — Entry Point & Interface
 
-**Ruolo:** coordina il ciclo di ascolto vocale e anima l'interfaccia grafica Pygame.
+**Role:** coordinates the audio listen loop and animates the Pygame eye interface.
 
-### Macchina a stati
+### State machine
 
-Bob vive in uno di quattro stati globali, che cambiano sia l'animazione degli occhi che il comportamento audio:
+Bob lives in one of four global states, which drive both the eye animation and audio behaviour:
 
-| Stato | Colore occhi | Descrizione |
+| State | Eye colour | Description |
 |---|---|---|
-| `IDLE` | Azzurro | Attesa della wake word, occhi che battono casualmente |
-| `ASCOLTO` | Verde | Wake word rilevata, sta registrando il comando |
-| `PENSA` | Viola | Audio inviato a Whisper + LLM in elaborazione |
-| `PARLA` | Viola pulsante | Edge TTS in riproduzione |
+| `IDLE` | Blue | Waiting for wake word; eyes blink randomly |
+| `ASCOLTO` | Green | Wake word detected; recording user command |
+| `PENSA` | Purple | Audio sent to Whisper + LLM processing |
+| `PARLA` | Pulsing purple | Edge TTS audio is playing |
 
-### Variabili globali
+### Global variables
 
 ```python
-stato_globale: str          # Stato corrente della macchina a stati
-colore_corrente: tuple      # RGB colore occhi
-storico_conversazione: list # Ultimi 6 turni (3 user + 3 assistant)
-ultima_risposta_bob: str    # Testo ultima risposta (per rilevare "?")
+stato_globale: str          # Current state machine state
+colore_corrente: tuple      # RGB eye colour
+storico_conversazione: list # Last 6 turns (3 user + 3 assistant)
+ultima_risposta_bob: str    # Last response text (used to detect trailing "?")
 ```
 
-### Funzioni
+### Functions
 
 #### `salva_file_audio(buffer_audio, nome_file) -> str`
-Salva un buffer di chunk PyAudio come file `.wav` a 16kHz mono 16-bit.
+Saves a PyAudio chunk buffer as a 16kHz mono 16-bit `.wav` file.
 
-| Parametro | Tipo | Descrizione |
+| Parameter | Type | Description |
 |---|---|---|
-| `buffer_audio` | `list[bytes]` | Lista di chunk audio raw |
-| `nome_file` | `str` | Percorso del file di output (default: `temp_cmd.wav`) |
+| `buffer_audio` | `list[bytes]` | List of raw audio chunks |
+| `nome_file` | `str` | Output file path (default: `temp_cmd.wav`) |
 
-**Ritorna:** percorso del file salvato.
+**Returns:** path of the saved file.
 
-#### `ciclo_ascolto()` (thread daemon)
-Loop principale audio. Legge il microfono a chunk da 2000 campioni a 16kHz.
+#### `ciclo_ascolto()` (daemon thread)
+Main audio loop. Reads the microphone in 2000-sample chunks at 16kHz.
 
-Logica interna:
-1. **Durante `PARLA`:** Vosk ascolta in sottofondo solo per i trigger di stop. Se rileva "stop/basta/silenzio", chiama `interrompi_voce()` e torna a `IDLE`.
-2. **Durante `IDLE`:** Vosk cerca la wake word ("bob", "pop", "bomb", "bop"). Quando la trova, passa ad `ASCOLTO`.
-3. **Durante `ASCOLTO`:** Registra audio fino a 16 chunk di silenzio consecutivi (`SOGLIA_SILENZIO=800`). Poi manda a Whisper, ottiene il testo, chiama `chiedi_a_bob()`, e avvia `parla()`.
+Internal logic:
+1. **During `PARLA`:** Vosk listens in the background for stop triggers only. On detection, calls `interrompi_voce()` and returns to `IDLE`.
+2. **During `IDLE`:** Vosk scans for wake words ("bob", "pop", "bomb", "bop"). On match, transitions to `ASCOLTO`.
+3. **During `ASCOLTO`:** Records audio until 16 consecutive silence chunks (`SOGLIA_SILENZIO=800`). Then sends to Whisper, gets the transcript, calls `chiedi_a_bob()`, and starts `parla()`.
 
 #### `disegna_pillola(cx, cy, w, h, colore)`
-Disegna un occhio a forma di pillola con effetto luce (highlight bianco semi-trasparente).
+Draws a pill-shaped eye with a semi-transparent white highlight for depth.
 
-| Parametro | Descrizione |
+| Parameter | Description |
 |---|---|
-| `cx, cy` | Centro della pillola |
-| `w, h` | Larghezza e altezza |
-| `colore` | Tupla RGB |
+| `cx, cy` | Centre of the pill |
+| `w, h` | Width and height |
+| `colore` | RGB tuple |
 
-### Costanti rilevanti
+### Key constants
 
 ```python
-SOGLIA_SILENZIO     = 800   # Ampiezza media sotto cui un chunk è "silenzio"
-MAX_SILENZIO_CHUNKS = 16    # Chunk di silenzio consecutivi per terminare la registrazione
+SOGLIA_SILENZIO     = 800   # Mean amplitude below which a chunk counts as silence
+MAX_SILENZIO_CHUNKS = 16    # Consecutive silence chunks before recording ends
 TRIGGER_WORDS       = ["bob", "pop", "bomb", "bop"]
 TRIGGER_STOP        = ["basta", "stop", "silenzio", "bust", "pasta", "stob"]
 ```
 
 ---
 
-## `cervello.py` — LLM, Memoria, Trascrizione
+## `cervello.py` — LLM, Memory & Transcription
 
-**Ruolo:** interfaccia con Groq API per LLM e Whisper, gestione della memoria persistente.
+**Role:** interfaces with the Groq API for both LLM responses and Whisper transcription; manages persistent user memory.
 
-### Configurazione
+### Configuration
 
 ```python
-MODEL_NAME   = "openai/gpt-oss-120b"   # Modello LLM su Groq
-FILE_MEMORIA = "memoria.json"            # Path del file memoria
+MODEL_NAME   = "openai/gpt-oss-120b"   # LLM model served on Groq
+FILE_MEMORIA = "memoria.json"            # Memory file path
 ```
 
-### Funzioni
+### Functions
 
 #### `carica_memoria() -> dict`
-Legge `memoria.json`. Se il file non esiste, lo crea vuoto.
+Reads `memoria.json`. Creates an empty file if it does not exist.
 
-**Ritorna:** dizionario con i fatti noti sull'utente.
+**Returns:** dictionary of known user facts.
 
 ---
 
 #### `salva_memoria(nuovi_dati: dict)`
-Effettua un merge tra la memoria esistente e `nuovi_dati`, poi sovrascrive il file.
+Merges `nuovi_dati` into the existing memory and overwrites the file.
 
-| Parametro | Tipo | Descrizione |
+| Parameter | Type | Description |
 |---|---|---|
-| `nuovi_dati` | `dict` | Coppie chiave-valore da aggiungere/aggiornare |
+| `nuovi_dati` | `dict` | Key-value pairs to add or update |
 
 ---
 
 #### `estrai_e_aggiorna_memoria(testo_utente: str)`
-Usa il LLM per estrarre fatti personali dal messaggio dell'utente e li salva in memoria.
+Uses the LLM to extract personal facts from the user's message and persists them.
 
-Le chiavi generate sono **semantiche e composte** per evitare collisioni (es. `pizza_preferita`, `fiore_preferito`). Se non ci sono fatti da salvare, il LLM restituisce `{}` e non viene scritto nulla.
+Keys are **semantic and compound** to avoid collisions (e.g. `pizza_preferita`, `fiore_preferito`). If no facts are found, the LLM returns `{}` and nothing is written.
 
 ---
 
 #### `trascrivi_audio(file_path: str) -> str`
-Trascrive un file audio usando `whisper-large-v3` via Groq.
+Transcribes an audio file using `whisper-large-v3` via Groq.
 
-| Parametro | Tipo | Descrizione |
+| Parameter | Type | Description |
 |---|---|---|
-| `file_path` | `str` | Percorso del file audio (`.wav` o `.mp3`) |
+| `file_path` | `str` | Path to the audio file (`.wav` or `.mp3`) |
 
-**Ritorna:** testo trascritto, stringa vuota in caso di errore.
+**Returns:** transcribed text, or empty string on error.
 
 ---
 
 #### `chiedi_a_bob(testo_utente: str, cronologia: list | None) -> str`
-Genera la risposta di Bob integrando:
-- memoria a lungo termine (da `memoria.json`)
-- cronologia conversazione a breve termine (ultimi 6 messaggi)
-- system prompt con personalità e regole operative
+Generates Bob's response by combining:
+- Long-term memory (from `memoria.json`)
+- Short-term conversation history (last 6 messages)
+- System prompt with personality rules and operational guidelines
 
-| Parametro | Tipo | Descrizione |
+| Parameter | Type | Description |
 |---|---|---|
-| `testo_utente` | `str` | Comando dell'utente |
-| `cronologia` | `list[dict]` | Lista di messaggi `{"role": ..., "content": ...}` |
+| `testo_utente` | `str` | User command |
+| `cronologia` | `list[dict]` | Message list `{"role": ..., "content": ...}` |
 
-**Ritorna:** risposta testuale di Bob.
+**Returns:** Bob's text response.
 
-**Nota:** se la risposta termina con `?`, `occhi.py` mantiene aperto il microfono automaticamente (senza richiedere wake word).
+**Note:** if the response ends with `?`, `occhi.py` keeps the microphone open automatically.
 
 ---
 
-## `voce.py` — Sintesi Vocale
+## `voce.py` — Speech Synthesis
 
-**Ruolo:** converte testo in audio con Microsoft Edge TTS, con rilevamento automatico della lingua.
+**Role:** converts text to audio using Microsoft Edge TTS, with automatic language detection.
 
-### Configurazione
+### Configuration
 
 ```python
-VOICE_MODEL = "it-IT-DiegoNeural"   # Voce italiana di default
+VOICE_MODEL = "it-IT-DiegoNeural"   # Default Italian voice
 ```
 
-### Funzioni
+### Functions
 
 #### `formatta_numeri_per_tts(testo: str) -> str`
-Pre-processa il testo per una lettura naturale dei numeri:
-- Rimuove spazi separatori tra cifre (inclusi Unicode ` `, ` `)
-- Formatta numeri ≥4 cifre con il punto delle migliaia (es. `1000` → `1.000`)
+Pre-processes text for natural number reading:
+- Removes digit separators (including Unicode narrow-space and non-breaking space)
+- Formats numbers ≥4 digits with thousands separators (e.g. `1000` → `1.000`)
 
 ---
 
 #### `rileva_lingua(testo: str) -> str`
-Determina la voce TTS in base alla densità di parole inglesi comuni nel testo.
+Picks the TTS voice based on the density of common English words in the text.
 
-Soglia: ≥2 parole inglesi **oppure** >25% del testo → usa `en-US-GuyNeural`, altrimenti `it-IT-DiegoNeural`.
+Threshold: ≥2 English words **or** >25% of tokens → uses `en-US-GuyNeural`; otherwise `it-IT-DiegoNeural`.
 
 ---
 
 #### `parla(testo: str)`
-Pipeline TTS completa:
-1. Pre-processa il testo con `formatta_numeri_per_tts`
-2. Rileva la lingua con `rileva_lingua`
-3. Genera l'audio con Edge TTS (async → salva in `temp_voice.mp3`)
-4. Riproduce via `pygame.mixer.music`
+Full TTS pipeline:
+1. Pre-processes text with `formatta_numeri_per_tts`
+2. Detects language with `rileva_lingua`
+3. Generates audio with Edge TTS (async → saves to `temp_voice.mp3`)
+4. Plays back via `pygame.mixer.music`
 
 ---
 
 #### `interrompi_voce()`
-Chiama `pygame.mixer.music.stop()` se l'audio è in riproduzione. Usata dal trigger "stop".
+Calls `pygame.mixer.music.stop()` if audio is playing. Triggered by stop words.
 
 ---
 
-## `luci.py` — Controllo Luci Smart
+## `luci.py` — Smart Light Control
 
-**Ruolo:** controlla una lampadina Tuya tramite il protocollo locale (LAN, senza cloud).
+**Role:** controls a Tuya smart bulb over the local network (LAN, no cloud required).
 
-### Configurazione
+### Configuration
 
 ```python
-DEVICE_ID = "..."        # ID dispositivo Tuya
-IP_ADDRESS = "..."       # IP locale della lampadina
-LOCAL_KEY  = "..."       # Chiave locale Tuya (da app Tuya/Smart Life)
+DEVICE_ID  = "..."   # Tuya device ID
+IP_ADDRESS = "..."   # Local IP of the bulb
+LOCAL_KEY  = "..."   # Local key (from Tuya / Smart Life app)
 ```
 
-> **Sicurezza:** non committare mai questi valori. Usare variabili d'ambiente o un file `.env`.
+> **Security:** never commit these values. Use environment variables or a `.env` file.
 
-### Funzioni
+### Functions
 
 #### `get_lampadina() -> tinytuya.BulbDevice`
-Inizializza la connessione alla lampadina. `set_socketPersistent(False)` chiude il socket dopo ogni comando per evitare blocchi.
+Initialises the bulb connection. `set_socketPersistent(False)` closes the socket after each command to prevent hangs.
 
 ---
 
 #### `controlla_luce_cami(azione: str, colore: str | None, luminosita: int | None) -> str`
 
-| Parametro | Tipo | Valori accettati |
+| Parameter | Type | Accepted values |
 |---|---|---|
 | `azione` | `str` | `"accendi"`, `"spegni"`, `"colore"`, `"luminosita"` |
 | `colore` | `str \| None` | `"rosso"`, `"verde"`, `"blu"`, `"bianco"`, `"giallo"`, `"viola"`, `"rosa"`, `"arancione"` |
-| `luminosita` | `int \| None` | `0–100` (percentuale) |
+| `luminosita` | `int \| None` | `0–100` (percentage) |
 
-**Ritorna:** stringa descrittiva del risultato dell'operazione.
+**Returns:** string describing the result of the operation.
 
-**Mapping luminosità:** il valore percentuale viene scalato su range `10–1000` (range nativo Tuya).
+**Brightness mapping:** the percentage value is scaled to the `10–1000` range (native Tuya range).
 
 ---
 
-## `calendario.py` — Integrazione macOS Calendar
+## `calendario.py` — macOS Calendar Integration
 
-**Ruolo:** legge e crea eventi nel calendario macOS tramite AppleScript.
+**Role:** reads and creates events in macOS Calendar via AppleScript.
 
-> Richiede macOS e i permessi di accesso a "Calendario" nelle impostazioni Privacy.
+> Requires macOS and Calendar access permission in System Settings → Privacy.
 
-### Funzioni
+### Functions
 
 #### `leggi_eventi_oggi() -> str`
-Legge tutti gli eventi nella giornata corrente (00:00–23:59) dal calendario macOS.
+Reads all events in the current day (00:00–23:59) from macOS Calendar.
 
-**Ritorna:** stringa con elenco eventi nel formato `"Titolo alle HH:MM:SS; ..."`, oppure `"Nessun impegno in programma per oggi."`.
+**Returns:** string listing events as `"Title at HH:MM:SS; ..."`, or `"No events scheduled for today."`.
 
 ---
 
 #### `crea_evento(titolo: str, data_ora: str, durata_minuti: int) -> str`
 
-| Parametro | Tipo | Descrizione |
+| Parameter | Type | Description |
 |---|---|---|
-| `titolo` | `str` | Nome dell'evento |
-| `data_ora` | `str` | Formato `"YYYY-MM-DD HH:MM"` (es. `"2026-09-14 15:30"`) |
-| `durata_minuti` | `int` | Durata in minuti (default: 60) |
+| `titolo` | `str` | Event name |
+| `data_ora` | `str` | Format `"YYYY-MM-DD HH:MM"` (e.g. `"2026-09-14 15:30"`) |
+| `durata_minuti` | `int` | Duration in minutes (default: 60) |
 
-**Ritorna:** conferma testuale dell'evento creato, oppure messaggio di errore.
+**Returns:** confirmation string, or error message.
 
-**Nota:** gli eventi vengono creati nel primo calendario disponibile (`calendar 1`).
+**Note:** events are created in the first available calendar (`calendar 1`).
