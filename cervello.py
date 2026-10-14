@@ -26,15 +26,18 @@ User message
 import os
 import json
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 from groq import Groq
 
 from calendario import crea_evento, leggi_eventi_oggi
 from luci import controlla_luce_cami
 
-# Load GROQ_API_KEY (and any other vars) from a .env file in the project root.
-# Falls back to the shell environment if no .env file is present.
-load_dotenv()
+# Load variables from a .env file if python-dotenv is installed.
+# Falls back silently to the shell environment if the package is missing.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # ---------------------------------------------------------------------------
 # Client & model configuration
