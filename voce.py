@@ -114,13 +114,44 @@ def rileva_lingua(testo):
         return VOICE_MODEL
 
     en_words = {
+        # Function words
         "the", "is", "in", "and", "to", "of", "a", "it", "you",
         "that", "my", "what", "how", "do", "for", "are", "have",
-        "with", "this", "from",
+        "with", "this", "from", "i", "me", "we", "he", "she",
+        "they", "them", "his", "her", "our", "your", "its", "can",
+        "will", "would", "could", "should", "may", "might", "must",
+        "shall", "was", "were", "be", "been", "being", "has", "had",
+        "did", "does", "not", "no", "on", "at", "by", "an", "or",
+        "but", "so", "if", "as", "up", "out", "about", "into",
+        "then", "than", "when", "where", "who", "which", "there",
+        "their", "all", "any", "also", "just", "more", "also",
+        "some", "one", "two", "time", "get", "got", "go", "let",
+        # Greetings and short conversational phrases
+        "hi", "hey", "bye", "hello", "yes", "yeah", "no", "nope",
+        "ok", "okay", "please", "thanks", "thank", "sorry", "great",
+        "good", "well", "right", "sure", "fine", "nice", "cool",
+        # Common command words
+        "create", "add", "set", "show", "read", "check", "open",
+        "turn", "make", "tell", "need", "want", "like", "know",
+        "think", "see", "use", "find", "give", "put", "take",
+        "remind", "schedule", "book", "cancel", "delete", "edit",
+        "today", "tomorrow", "yesterday", "now", "later", "next",
+        "morning", "afternoon", "evening", "night", "week", "month",
+        "monday", "tuesday", "wednesday", "thursday", "friday",
+        "saturday", "sunday", "january", "february", "march",
+        "april", "june", "july", "august", "september", "october",
+        "november", "december", "event", "meeting", "reminder",
+        "light", "lights", "lamp", "calendar", "task", "note",
     }
-    en_score = sum(1 for p in parole if p in en_words)
+    # Split hyphenated tokens too (e.g. "bye-bye" → ["bye", "bye"]).
+    tokens = []
+    for p in parole:
+        tokens.extend(p.split("-"))
+    en_score = sum(1 for t in tokens if t in en_words)
 
-    if en_score >= 2 or (en_score / len(parole) > 0.25):
+    # Lower threshold: 1 English word in a short phrase, or 15% in longer text.
+    soglia = 1 if len(tokens) <= 3 else max(2, int(len(tokens) * 0.15))
+    if en_score >= soglia:
         return "en-US-GuyNeural"
     return VOICE_MODEL
 
